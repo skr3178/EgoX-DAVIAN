@@ -61,16 +61,12 @@ def main(args):
     lora_path=args.lora_path
     dtype=torch.bfloat16
 
-    quant = os.environ.get("EGOX_QUANT")  # "nf4" -> 4-bit transformer + unfused LoRA + model offload (24 GB path)
-
     from core.finetune.models.wan_i2v.custom_transformer import WanTransformer3DModel_GGA as WanTransformer3DModel
-    tf_kwargs = dict(torch_dtype=dtype)
-    if quant == "nf4":
-        from diffusers import BitsAndBytesConfig
-        tf_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True, bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=dtype, bnb_4bit_use_double_quant=True)
-    transformer = WanTransformer3DModel.from_pretrained(transformer_path, **tf_kwargs)
+    # NF4 4-bit load so the 14B transformer fits 24 GB (was bf16 ~28 GB)
+    from diffusers import BitsAndBytesConfig
+    qcfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                              bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
+    transformer = WanTransformer3DModel.from_pretrained(transformer_path, quantization_config=qcfg, torch_dtype=dtype)
 
     image_encoder = CLIPVisionModel.from_pretrained(model_path, subfolder="image_encoder", torch_dtype=torch.float32)
 
@@ -78,29 +74,13 @@ def main(args):
     pipe = WanWidthConcatImageToVideoPipeline.from_pretrained(model_path, image_encoder=image_encoder, transformer=transformer, torch_dtype=dtype)
 
     if lora_path:
-        print('loading lora')
+        print('loading lora (unfused PEFT adapter — cannot fuse bf16 LoRA into NF4 weights)')
         pipe.load_lora_weights(lora_path, weight_name="pytorch_lora_weights.safetensors")
-        if quant == "nf4":
-            print('  quantized base -> running LoRA UNFUSED (cannot fuse into 4-bit weights)')
-        else:
-            pipe.fuse_lora(components=["transformer"], lora_scale = 1.0 )
+        # NOTE: fuse_lora intentionally SKIPPED for the quantized base (see models.md caveat).
+        # pipe.fuse_lora(components=["transformer"], lora_scale=1.0)
 
-    if quant == "nf4":
-        # 24 GB path: 4-bit transformer (~8 GB) is small enough to keep the WHOLE pipe resident
-        # on CUDA — avoids the custom-pipe device skew that offload hooks introduce (vae.device
-        # reports cpu before its forward hook fires). bnb transformer is already on cuda.
-        if os.environ.get("EGOX_OFFLOAD") == "model":
-            pipe.enable_model_cpu_offload()
-        else:
-            for m in (pipe.vae, pipe.text_encoder, pipe.image_encoder):
-                m.to("cuda")
-        pipe.vae.enable_tiling()
-    elif os.environ.get("EGOX_LOWVRAM") == "1":
-        # sequential CPU offload (works for stock pipe; breaks custom pipe at VAE encode)
-        pipe.enable_sequential_cpu_offload()
-        pipe.vae.enable_tiling()
-    else:
-        pipe.to("cuda")
+    # everything resident on GPU (peak ~20-22 GB fits 24 GB; avoids the offload CPU/GPU device split)
+    pipe.to("cuda")
 
     os.makedirs(args.out, exist_ok=True)
     for i in range(len(prompts)):

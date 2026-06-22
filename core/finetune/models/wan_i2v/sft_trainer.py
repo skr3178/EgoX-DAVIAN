@@ -196,7 +196,9 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         """Encode video to latent space (copied from Trainer)"""
         # shape of input video: [B, C, F, H, W]
         vae = self.vae
-        video = video.to(vae.device, dtype=vae.dtype)
+        # use the pipeline execution device (cuda), not vae.device — under enable_model_cpu_offload
+        # vae.device reports cpu until its forward hook fires, which would skew input vs weight device
+        video = video.to(self._execution_device, dtype=vae.dtype)
         
         # Ensure video is in [B, C, F, H, W] format
         if video.dim() == 5 and video.shape[1] != 3:
@@ -291,7 +293,10 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         
         # Convert from [-1, 1] to [0, 1] range for CLIP processor
         decoded_image = (decoded_image + 1.0) / 2.0
-        
+        # clamp: VAE decode isn't perfectly bounded (nf4 reconstruction error can exceed [0,1]),
+        # and the CLIP image processor (do_rescale=False) rejects out-of-range values
+        decoded_image = decoded_image.clamp(0.0, 1.0)
+
         # Use decoded image for CLIP encoding - processor handles all normalization
         image = self.image_processor(images=decoded_image, return_tensors="pt", do_rescale=False).to(device)
         image_embeds = self.image_encoder(**image, output_hidden_states=True)

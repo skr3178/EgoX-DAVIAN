@@ -636,6 +636,13 @@ class WanTransformer3DModel_GGA(ModelMixin, ConfigMixin, PeftAdapterMixin, FromO
             frame_cut = H * W
 
             cos_sim = None
+            # NOTE (24 GB repro): this is the GGA memory wall. The N×N cos-similarity bias is
+            # float32 -> 28028^2 * 4 B = ~3.14 GB for the buffer alone, plus the `mask = cos_sim > 0`
+            # bool (~0.78 GB) and the `cos_sim[mask] *= factor` gather/scatter temp below. On a 24 GB
+            # GPU with the nf4 transformer resident this pushes Section 6 ~1 GB over (OOM on a 5.69 GB
+            # then 972 MB alloc). Kept float32 to stay faithful to the paper. A bf16 buffer would
+            # halve it (~1.6 GB) and likely fit, but changes numerics, so it is intentionally NOT done.
+            # See models.md "Section-by-section inference test" for the full analysis.
             cos_sim = torch.zeros((1, attention_GGA.shape[1], attention_GGA.shape[1]), device=hidden_states.device) #! 1, 28028, 28028
             for i in range(FF):
                 cos_sim[:, i*frame_cut:(i+1)*frame_cut,:] = torch.matmul(attention_GGA[:,i*frame_cut:(i+1)*frame_cut,:], point_vecs_per_frame[i:i+1].transpose(-1, -2)).to(hidden_states.device)
