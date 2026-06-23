@@ -717,7 +717,12 @@ class WanI2VSftTrainer(Trainer):
 
         components.text_encoder = UMT5EncoderModel.from_pretrained(model_path, subfolder="text_encoder")
 
-        if os.environ.get("EGOX_NF4") == "1":
+        if os.environ.get("EGOX_PRECOMPUTE_ONLY") == "1":
+            # precompute pass: only VAE/text/image encoders are needed to build the latent/embed/GGA
+            # cache. Skip the 14B transformer entirely so the cache can be built encoders-only
+            # (lower VRAM; fits the 12 GB box). fit() early-exits after prepare_dataset().
+            components.transformer = None
+        elif os.environ.get("EGOX_NF4") == "1":
             # QLoRA: load the 14B transformer in 4-bit NF4 so it fits a 24 GB GPU (~8.6 GB).
             from diffusers import BitsAndBytesConfig
             _qcfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",

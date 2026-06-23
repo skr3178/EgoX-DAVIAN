@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -154,7 +155,8 @@ class Trainer:
             if self.args.enable_tiling:
                 self.components.vae.enable_tiling()
 
-        self.state.transformer_config = self.components.transformer.config
+        if self.components.transformer is not None:
+            self.state.transformer_config = self.components.transformer.config
 
     def prepare_dataset(self) -> None:
         logger.info("Initializing dataset and dataloader")
@@ -463,6 +465,11 @@ class Trainer:
         self.check_setting()
         self.prepare_models()
         self.prepare_dataset()
+        if os.environ.get("EGOX_PRECOMPUTE_ONLY") == "1":
+            # cache (latents/embeds/GGA) is built + encoders unloaded in prepare_dataset();
+            # stop before building the optimizer / training loop. Run training later (cache hit).
+            logger.info("EGOX_PRECOMPUTE_ONLY=1 -> cache built, exiting before training loop")
+            return
         self.prepare_trainable_parameters()
         self.prepare_optimizer()
         self.prepare_for_training()
