@@ -43,3 +43,6 @@ Wan2.1-I2V-14B-480P-Diffusers/
 checkpoints/
 # 24GB repro run logs
 egox_e2e_*.log
+
+# pre-encoded training cache (derived, regenerable, model/config-specific)
+example/*/cache/

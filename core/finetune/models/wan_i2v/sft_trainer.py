@@ -1,3 +1,4 @@
+import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -716,7 +717,15 @@ class WanI2VSftTrainer(Trainer):
 
         components.text_encoder = UMT5EncoderModel.from_pretrained(model_path, subfolder="text_encoder")
 
-        components.transformer = WanTransformer3DModel.from_pretrained(model_path, subfolder="transformer")
+        if os.environ.get("EGOX_NF4") == "1":
+            # QLoRA: load the 14B transformer in 4-bit NF4 so it fits a 24 GB GPU (~8.6 GB).
+            from diffusers import BitsAndBytesConfig
+            _qcfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                       bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
+            components.transformer = WanTransformer3DModel.from_pretrained(
+                model_path, subfolder="transformer", quantization_config=_qcfg, torch_dtype=torch.bfloat16)
+        else:
+            components.transformer = WanTransformer3DModel.from_pretrained(model_path, subfolder="transformer")
 
         components.vae = AutoencoderKLWan.from_pretrained(model_path, subfolder="vae")
 

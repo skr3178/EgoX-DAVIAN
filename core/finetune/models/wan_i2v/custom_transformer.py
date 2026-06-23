@@ -101,9 +101,11 @@ class WanAttnProcessor2_0:
             hidden_states_img = hidden_states_img.type_as(query)
 
         if cos_sim is not None and not do_kv_cache:
-            cos_sim = cos_sim + 1.0
-            attn_mask_from_cos_sim = torch.log(cos_sim + 1e-6)
-            attention_mask_GGA = attention_mask_GGA[0,:,0] 
+            # cos_sim already IS the log-domain bias log(cos+1+1e-6): it is precomputed once,
+            # in-place, in the main forward (to avoid per-block 3.1 GB temporaries). Numerically
+            # identical to the original per-block `log(cos_sim + 1.0 + 1e-6)`.
+            attn_mask_from_cos_sim = cos_sim
+            attention_mask_GGA = attention_mask_GGA[0,:,0]
             #! Exo attention
             hidden_states_exo = F.scaled_dot_product_attention(
                 query[:, :, attention_mask_GGA==1],
@@ -647,18 +649,30 @@ class WanTransformer3DModel_GGA(ModelMixin, ConfigMixin, PeftAdapterMixin, FromO
             for i in range(FF):
                 cos_sim[:, i*frame_cut:(i+1)*frame_cut,:] = torch.matmul(attention_GGA[:,i*frame_cut:(i+1)*frame_cut,:], point_vecs_per_frame[i:i+1].transpose(-1, -2)).to(hidden_states.device)
 
-            cos_sim = torch.clamp(cos_sim, min=-1.0, max=1.0)
-            
+            cos_sim.clamp_(min=-1.0, max=1.0)   # in-place: avoids a fresh ~3.1 GB N×N copy
+
             #! Scaling with hyperparameter
             if cos_sim_scaling_factor > 1.0:
-                mask = cos_sim > 0
-                cos_sim[mask] = cos_sim[mask] * cos_sim_scaling_factor
+                # in-place, chunked over rows: multiply only positive entries by the factor without
+                # materializing a full 28028² bool mask + gather/scatter (~3-4 GB spike that OOMs on
+                # 24 GB). Faithful — identical result to `cos_sim[cos_sim>0] *= factor`.
+                _N = cos_sim.shape[1]
+                for _r in range(0, _N, 2048):
+                    _blk = cos_sim[:, _r:_r+2048, :]
+                    _m = _blk > 0
+                    _blk[_m] = _blk[_m] * cos_sim_scaling_factor
             else:
                 cos_sim = cos_sim * cos_sim_scaling_factor
 
             attention_mask_GGA_ = attention_mask_GGA[:,:,0] #! 1, 28028
             mask = (attention_mask_GGA_[:, :, None] == 1).to(hidden_states.device) 
-            cos_sim.masked_fill_(mask, 0.0) 
+            cos_sim.masked_fill_(mask, 0.0)
+            # Precompute the log-domain attention bias ONCE here, in-place, instead of rebuilding it
+            # inside every one of the N DiT blocks. The per-block code did `log(cos_sim + 1 + 1e-6)`,
+            # allocating ~3 copies of the 28028² matrix (~3.1 GB each) per block per step. Doing it
+            # once and in-place is numerically identical (faithful — same float32 values) but cuts the
+            # per-block peak by ~6 GB, which is what lets GGA fit on a 24 GB GPU. See block forward.
+            cos_sim.add_(1.0 + 1e-6).log_()
 
         else:
             cos_sim = None

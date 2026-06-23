@@ -74,6 +74,7 @@ class BaseWanDataset(Dataset):
         self.exo_videos = []
         self.ego_gt_videos = []
         self.ego_prior_videos = []
+        self.prompts = []
         self.depth_map_paths = []
         self.depth_intrinsics = []
         self.camera_extrinsics = []
