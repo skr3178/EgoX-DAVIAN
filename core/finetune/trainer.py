@@ -282,6 +282,7 @@ class Trainer:
             beta3=self.args.beta3,
             epsilon=self.args.epsilon,
             weight_decay=self.args.weight_decay,
+            use_8bit=os.environ.get("EGOX_8BIT_OPTIM") == "1",  # QLoRA: 8-bit AdamW optimizer state (~2.5 GB) to fit 24 GB
             use_deepspeed=use_deepspeed_opt,
         )
 
