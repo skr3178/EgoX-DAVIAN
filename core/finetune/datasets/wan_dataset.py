@@ -177,9 +177,12 @@ class BaseWanDataset(Dataset):
         prompt_embedding_path = prompt_embeddings_dir / (prompt_hash + ".safetensors")
         
         if self.depth_map_paths is None:
-            scene_name = str(exo_video).split('/')[-5] 
+            scene_name = str(exo_video).split('/')[-5]
         else:
-            scene_name = str(depth_intrinsics).split('/')[-4] 
+            # depth_map_path == data_root/depth_maps/<clip> -> .name is the unique clip id.
+            # (was split('/')[-4], which is the constant 'vipe_results' in the cooking layout and
+            #  collided the cache for every clip -> all clips read one latent. Use the clip name.)
+            scene_name = depth_map_path.name
         exo_name = f"{scene_name}_exo_{exo_video.stem}"
         combined_name = f"{exo_name}_ego_gt_prior"
         encoded_video_path = video_latent_dir / (combined_name + ".safetensors")

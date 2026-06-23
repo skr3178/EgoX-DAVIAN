@@ -744,7 +744,8 @@ class WanI2VSftTrainer(Trainer):
 
     @override
     def prepare_models(self) -> None:
-        self.state.transformer_config = self.components.transformer.config
+        if self.components.transformer is not None:  # None in EGOX_PRECOMPUTE_ONLY mode
+            self.state.transformer_config = self.components.transformer.config
 
     @override
     def initialize_pipeline(self) -> WanWidthConcatImageToVideoPipeline:
