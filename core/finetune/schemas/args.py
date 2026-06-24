@@ -6,6 +6,8 @@ from typing import Any, List, Literal, Tuple
 
 from pydantic import BaseModel, ValidationInfo, field_validator
 
+from core.config.resolution import get_train_resolution
+
 
 class Args(BaseModel):
     ########## Model ##########
@@ -124,7 +126,7 @@ class Args(BaseModel):
         parser.add_argument("--data_root", type=str, required=True)
         parser.add_argument("--caption_column", type=str, required=False)
         parser.add_argument("--video_column", type=str, required=False)
-        parser.add_argument("--train_resolution", type=str, required=True)
+        parser.add_argument("--train_resolution", type=str, default=get_train_resolution())  # default from configs/resolution.yaml
         parser.add_argument("--report_to", type=str, required=True)
 
         # Training hyperparameters

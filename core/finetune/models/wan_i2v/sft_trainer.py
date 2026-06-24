@@ -114,9 +114,9 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         ego_prior_video,  # ego prior video for latent condition
         batch_size: int,
         num_channels_latents: int = 16,
-        height: int = 480,
-        exo_width: int = 784,
-        ego_width: int = 448, 
+        height: Optional[int] = None,   # always passed by __call__ (no hardcoded resolution default)
+        exo_width: Optional[int] = None,
+        ego_width: Optional[int] = None,
         num_frames: int = 49,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
@@ -230,8 +230,8 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
         num_channels_latents = self.vae.config.z_dim
         
-        # Actual ego = 448 pixels -> 56 latents  
-        ego_pixel_width = 448
+        # ego region is square (HxH) => ego pixel width == height (was hardcoded 448 -> 56 latents).
+        ego_pixel_width = height
         ego_latent_width = ego_pixel_width // self.vae_scale_factor_spatial
         
         batch_size = batch_size * num_videos_per_prompt # prepare_latent에서 bsz를 이렇게 넘기고 있음
@@ -365,8 +365,8 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         ego_prior_video: PipelineImageInput,
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
-        height: int = 448,
-        width: int = 784+448, #1232
+        height: Optional[int] = None,   # always passed by generate_video / validation_step (no hardcoded res)
+        width: Optional[int] = None,
         num_frames: int = 49,
         num_inference_steps: int = 50,
         guidance_scale: float = 5.0,
@@ -901,10 +901,12 @@ class WanI2VSftTrainer(Trainer):
         
         mask_lat_size = torch.ones(latent_condition.shape[0], 1, actual_num_frames, latent_condition.shape[3], latent_condition.shape[4])
         
-        exo_width, ego_width = 784, 448 #! HARD CODING
-        vae_scale_factor_spatial = 2 ** len(self.components.vae.config.temperal_downsample) # 8
-        exo_latent_width = exo_width // vae_scale_factor_spatial  
-        ego_latent_width = ego_width // vae_scale_factor_spatial
+        # ego region is square (HxH) => its latent width == latent height; exo = total - ego.
+        # (was hardcoded exo,ego = 784,448 -> only correct at 448x1232; derive from the latent so the
+        #  exo/ego seam follows the ACTUAL resolution. Feeds the conditioning mask + noise mask (:936)
+        #  + loss mask (:956-957) below.)
+        ego_latent_width = latent_condition.shape[-2]
+        exo_latent_width = latent_condition.shape[-1] - ego_latent_width
         # Set exo_view mask (left part) to 1.0
         mask_lat_size[:, :, :, :, :exo_latent_width] = 1.0
         # Set ego_view mask (right part) to 0.0  

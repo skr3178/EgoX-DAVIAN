@@ -41,27 +41,15 @@ def generate_video(
     exo_video = load_video(video=exo_video_path)
     ego_prior_video = load_video(video=ego_prior_video_path)
 
-    cropped_exo_video = []
-    for img in exo_video:
-        width, height = img.size
-        cropped_img = img.crop((0, 0, width, height))
-        cropped_img = cropped_img.resize((784, 448))
-        cropped_exo_video.append(cropped_img)
-    exo_video = cropped_exo_video
+    # target generation resolution from the passed width/height (total concat W, H).
+    # exo|ego are concatenated width-wise: ego is square (H x H), exo is the rest ((W-H) x H).
+    # (was hardcoded exo.resize((784,448)); now derived so it matches the LoRA's training res.
+    #  backward-compatible: width=1232,height=448 -> exo (784,448), ego (448,448).)
+    tgt_W, tgt_H = width, height
+    exo_W = tgt_W - tgt_H
+    exo_video = [img.resize((exo_W, tgt_H)) for img in exo_video]            # exo -> (W-H) x H
+    ego_prior_video = [img.resize((tgt_H, tgt_H)) for img in ego_prior_video]  # ego -> H x H (square)
 
-    cropped_ego_prior_video = []
-    for img in ego_prior_video:
-        width, height = img.size
-        cropped_img = img.crop((0, 0, width, height))
-        cropped_ego_prior_video.append(cropped_img)
-
-    cropped_ego_prior_video = []
-    for img in ego_prior_video:
-        width, height = img.size
-        cropped_img = img.crop((0, 0, width, height))
-        cropped_ego_prior_video.append(cropped_img)
-
-    ego_prior_video = cropped_ego_prior_video
     exo_first_frame = exo_video[0] if exo_video else None
     ego_prior_first_frame = ego_prior_video[0] if ego_prior_video else None
 

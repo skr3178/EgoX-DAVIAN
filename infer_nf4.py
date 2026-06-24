@@ -24,6 +24,13 @@ def _set_seed(seed: Optional[int]) -> None:
 def main(args):
     _set_seed(args.seed)
 
+    # inference resolution matches the LoRA's training res. FxHxW pixels -> pixel + latent dims.
+    _tr = [int(x) for x in args.train_resolution.split("x")]
+    NUM_FRAMES, PIX_H, PIX_W = _tr[0], _tr[1], _tr[2]
+    LAT_F = (NUM_FRAMES - 1) // 4 + 1          # Wan VAE temporal: 49 -> 13
+    LAT_H, LAT_W = PIX_H // 8, PIX_W // 8       # Wan VAE spatial /8: 176->22, 704->88
+    print(f"[infer] resolution {NUM_FRAMES}x{PIX_H}x{PIX_W} (pixels) -> latent F={LAT_F} H={LAT_H} W={LAT_W}")
+
     meta_data_file = args.meta_data_file
     meta_data = load_from_json_file(meta_data_file)
     meta_data = meta_data['test_datasets']
@@ -43,7 +50,7 @@ def main(args):
         ego_prior_videos.append(meta['ego_prior_path'])
         prompts.append(meta['prompt'])
         take_name = exo_videos[-1].split('/')[-2]
-        depth_root = "/".join(meta['exo_path'].split('/')[:3])
+        depth_root = str(Path(meta['exo_path']).parents[2])  # <root>/videos/<clip>/exo.mp4 -> <root> (works for abs + rel paths)
         depth_map_paths.append(Path(os.path.join(depth_root, 'depth_maps', take_name)))
         camera_extrinsics.append(meta['camera_extrinsics'])
         camera_intrinsics.append(meta['camera_intrinsics'])
@@ -79,8 +86,12 @@ def main(args):
         # NOTE: fuse_lora intentionally SKIPPED for the quantized base (see models.md caveat).
         # pipe.fuse_lora(components=["transformer"], lora_scale=1.0)
 
-    # everything resident on GPU (peak ~20-22 GB fits 24 GB; avoids the offload CPU/GPU device split)
-    pipe.to("cuda")
+    # all-resident OOMs at 24 GB (NF4 transformer + UMT5 + CLIP + VAE > 23 GB). Use model CPU offload:
+    # each component is moved to GPU only when called, so peak ~ max single component + activations.
+    if os.environ.get("EGOX_INFER_OFFLOAD", "1") == "1":
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe.to("cuda")
 
     os.makedirs(args.out, exist_ok=True)
     for i in range(len(prompts)):
@@ -106,7 +117,7 @@ def main(args):
 
             device = 'cpu'
 
-            C, F, H, W = 16, 13, 56, 154 #! Hard coding
+            C, F, H, W = 16, LAT_F, LAT_H, LAT_W  # was hardcoded 16,13,56,154 (448x1232); now from --train_resolution
             exo_H, exo_W = H, W - H
             W = H
 
@@ -208,7 +219,8 @@ def main(args):
             point_map_world = (camera_extrinsics_c2w @ point_map_world.T).T[...,:3]
             point_map = point_map_world.reshape(p_f, p_h, p_w, 3).permute(0, 3, 1, 2)
 
-            point_map = point_map[:, :, (point_map.shape[2] - 448)//2:(point_map.shape[2] + 448)//2, (point_map.shape[3] - 784)//2:(point_map.shape[3] + 784)//2] #! [F, 3, 448, 784]
+            _eh, _ew = PIX_H, PIX_W - PIX_H  # ego height (=H), exo width (=W-H); was hardcoded 448, 784
+            point_map = point_map[:, :, (point_map.shape[2] - _eh)//2:(point_map.shape[2] + _eh)//2, (point_map.shape[3] - _ew)//2:(point_map.shape[3] + _ew)//2] #! [F, 3, H, W-H]
             point_map = torch.nn.functional.interpolate(point_map, size=(exo_H, exo_W), mode='bilinear', align_corners=False).permute(0, 2, 3, 1) #! [B, H, W, 3]
 
             ego_extrinsic_c2w = torch.linalg.inv(ego_extrinsic)
@@ -251,9 +263,9 @@ def main(args):
                 exo_video_path=exo_video_path,
                 ego_prior_video_path=ego_prior_video_path,
                 output_path=output_path,
-                num_frames=49,
-                width=784+448,
-                height=448,
+                num_frames=NUM_FRAMES,
+                width=PIX_W,
+                height=PIX_H,
                 num_inference_steps=50,
                 guidance_scale=5.0,
                 fps=30,
@@ -281,6 +293,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible inference")
     parser.add_argument("--do_kv_cache", action='store_true', help="whether to use key-value caching")
     parser.add_argument("--cos_sim_scaling_factor", type=float, default=1.0, help="scaling factor for cos similarity attention map")
+    from core.config.resolution import get_train_resolution
+    parser.add_argument("--train_resolution", type=str, default=get_train_resolution(), help="FxHxW (pixels) from configs/resolution.yaml; match the LoRA's training resolution; drives GGA grid + generation size")
     parser.add_argument("--start_idx", type=int, default=-1)
     parser.add_argument("--end_idx", type=int, default=-1)
     parser.add_argument("--in_the_wild", action='store_true', help="whether to use in-the-wild inference")

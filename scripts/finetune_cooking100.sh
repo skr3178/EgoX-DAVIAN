@@ -23,7 +23,6 @@ CT=/media/skr/SeagateHub1/egoexo4d/cooking_train
     --report_to tensorboard \
     --data_root "$CT" \
     --meta_data_file "$CT/meta_train_cooking.json" \
-    --train_resolution 49x176x704 \
     --train_epochs 100 \
     --seed 42 \
     --batch_size 1 --gradient_accumulation_steps 4 \

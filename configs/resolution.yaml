@@ -1,0 +1,9 @@
+# Single source of truth for train + inference resolution.
+# Change this ONE value and it permeates: training (data loader, loss masking, pipeline) and
+# inference (generation + GGA), via core/config/resolution.py:get_train_resolution() which feeds
+# the --train_resolution default in both core/finetune/schemas/args.py and infer_nf4.py.
+#
+# Format: "FxHxW" pixels. Frames locked at 49. The frame is [exo | ego] concatenated width-wise:
+#   ego is square (HxH), exo is the remainder (W-H wide). So W must be > H.
+# Examples: "49x176x704" (24 GB QLoRA), "49x448x1232" (paper / full res).
+train_resolution: "49x176x704"
