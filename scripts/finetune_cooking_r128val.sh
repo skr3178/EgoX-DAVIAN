@@ -13,10 +13,10 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export MASTER_ADDR=localhost MASTER_PORT=29521
 
 CT=/media/skr/SeagateHub1/egoexo4d/cooking_train
-# Train set: repoint to the ~280-clip meta once the 300-clip Stage-1 + reassembly is done.
-# Keep VAL_META = the fixed 20 held-out clips ACROSS runs so val_loss stays comparable.
-TRAIN_META="$CT/meta_train_84.json"
-VAL_META="$CT/meta_val_20.json"
+# Clean split (build_clean_split.py): 174 OK-prior clips -> 153 train / 21 held-out val,
+# stratified by take (no scene leakage); black/dark priors excluded.
+TRAIN_META="$CT/meta_train_clean.json"
+VAL_META="$CT/meta_val_clean.json"
 
 /media/skr/storage/conda_envs/egox/bin/accelerate launch --config_file configs_acc/1gpu.yaml --num_processes 1 --num_machines 1 \
   finetune.py \

@@ -238,13 +238,18 @@ class Trainer:
         )
 
         if self.val_dataset is not None:
-            self.val_data_loader = torch.utils.data.DataLoader(
-                self.val_dataset,
-                collate_fn=self.collate_fn,
-                batch_size=self.args.batch_size,
-                num_workers=self.args.num_workers,
-                pin_memory=self.args.pin_memory,
-                shuffle=False,
+            # prepare_data_loader so val batches land on the accelerator device (same as the
+            # training loader, which is accelerator.prepare'd) — else compute_loss hits a
+            # cuda/cpu device mismatch on the cached (CPU) latents.
+            self.val_data_loader = self.accelerator.prepare_data_loader(
+                torch.utils.data.DataLoader(
+                    self.val_dataset,
+                    collate_fn=self.collate_fn,
+                    batch_size=self.args.batch_size,
+                    num_workers=self.args.num_workers,
+                    pin_memory=self.args.pin_memory,
+                    shuffle=False,
+                )
             )
 
     def prepare_trainable_parameters(self):
