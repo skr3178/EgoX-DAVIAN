@@ -148,25 +148,16 @@ def main(args):
             ones = torch.ones_like(xs)
             pixel_coords = torch.stack([xs, ys, ones], dim=-1).view(-1, 3).to(dtype=ego_intrinsic.dtype)  # (H*W, 3)
 
-            pixel_coords_cv = pixel_coords[..., :2].cpu().numpy().reshape(-1, 1, 2).astype(np.float32)
-            K = scaled_intrinsic.cpu().numpy().astype(np.float32)
-
-            import cv2
-            #! Ego cam distorion coeffs (Project Aria) - Hard coded
-            distortion_coeffs = np.array([[-0.02340373583137989,0.09388021379709244,-0.06088035926222801,0.0053304750472307205,0.003342868760228157,-0.0006356257363222539,0.0005087381578050554,-0.0004747129278257489,-0.0011330085108056664,-0.00025734835071489215,0.00009328465239377692,0.00009424977179151028]])
-            D = distortion_coeffs.astype(np.float32) # ex: [k1, k2, k3, k4, k5, k6, p1, p2, s1, s2, s3, s4]
-            normalized_points = cv2.undistortPoints(pixel_coords_cv, K, D, R=np.eye(3), P=np.eye(3))
-
-
-            normalized_points = torch.from_numpy(normalized_points).squeeze(1).to(device) # (N, 2)
-
-            ones = torch.ones_like(normalized_points[..., :1])
-            cam_rays_fish = torch.cat([normalized_points, ones], dim=-1) # (N, 3)
-
-            cam_rays = cam_rays_fish / torch.norm(cam_rays_fish, dim=-1, keepdim=True)
-
-            cam_rays = cam_rays @ ego_extrinsic[::4, :3, :3]
-
+            # §5a FIX: match TRAINING GGA (wan_dataset.py:329-340) exactly so the LoRA is fed the
+            # same ego conditioning it was trained on. The author infer.py used a fisheye undistort +
+            # R (not R^T); numerically that gives cam_rays at cos~0.28 vs training (16% rays inverted)
+            # -> out-of-distribution conditioning -> artifacts. Training uses PINHOLE + R^T.
+            inv_intrinsics = torch.linalg.inv(scaled_intrinsic)  # (3, 3)
+            cam_rays = (inv_intrinsics @ pixel_coords.T).T  # pinhole, (H*W, 3)
+            cam_rays = cam_rays / torch.norm(cam_rays, dim=-1, keepdim=True)
+            cam_rays = cam_rays.view(H, W, 3).unsqueeze(0).expand(F, -1, -1, -1).reshape(F, H * W, 3)
+            cam_rays = cam_rays @ ego_extrinsic[::4, :3, :3].transpose(-1, -2)  # R^T (was R)
+            cam_rays = cam_rays / torch.norm(cam_rays, dim=-1, keepdim=True)
             cam_rays = cam_rays.view(F, H, W, 3)  # (B, H, W, 3)
 
             height, width = depth_maps.shape[1], depth_maps.shape[2]
@@ -219,8 +210,10 @@ def main(args):
             point_map_world = (camera_extrinsics_c2w @ point_map_world.T).T[...,:3]
             point_map = point_map_world.reshape(p_f, p_h, p_w, 3).permute(0, 3, 1, 2)
 
-            _eh, _ew = PIX_H, PIX_W - PIX_H  # ego height (=H), exo width (=W-H); was hardcoded 448, 784
-            point_map = point_map[:, :, (point_map.shape[2] - _eh)//2:(point_map.shape[2] + _eh)//2, (point_map.shape[3] - _ew)//2:(point_map.shape[3] + _ew)//2] #! [F, 3, H, W-H]
+            # §5a FIX: NO center-crop — match training (wan_dataset.py:384 interpolates the FULL point_map).
+            # The author crop cropped to (PIX_H, PIX_W-PIX_H) pixels; at the paper's 448x1232 that ~= the
+            # depth-map size (near no-op), but at our reduced 176x704 it destroys most of the exo geometry
+            # (point_vecs cos 0.33 vs training, 26% inverted). Dropping it restores cos=1.0 at any resolution.
             point_map = torch.nn.functional.interpolate(point_map, size=(exo_H, exo_W), mode='bilinear', align_corners=False).permute(0, 2, 3, 1) #! [B, H, W, 3]
 
             ego_extrinsic_c2w = torch.linalg.inv(ego_extrinsic)
@@ -243,7 +236,9 @@ def main(args):
             point_vecs = point_map[::4] - cam_origins #! [B, H, W, 3]
             point_vecs = point_vecs / torch.norm(point_vecs, dim=-1, keepdim=True) #! [B, H, W, 3]
 
-            cam_rays = torch.rot90(cam_rays, k=-1, dims=[1, 2])
+            # §5a FIX: vector 90-deg rotation (match training wan_dataset.py:407), NOT grid rot90.
+            # rot90 permutes the spatial grid; training rotates the direction vectors -> different result.
+            cam_rays = cam_rays @ torch.tensor([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], device=cam_rays.device, dtype=cam_rays.dtype)
 
             attn_maps = torch.cat((point_vecs, cam_rays), dim = 2)
             attn_masks = torch.cat((torch.ones_like(point_vecs), torch.zeros_like(cam_rays)), dim = 2)
