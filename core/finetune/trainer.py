@@ -197,6 +197,33 @@ class Trainer:
         self.accelerator.wait_for_everyone()
         logger.info("Precomputing latent for video and prompt embedding ... Done")
 
+        # Optional held-out validation set (forward-only val loss). Build + precompute its latents
+        # now, while VAE/text-encoder are still resident (the val clips are usually a subset of the
+        # train set -> cache hits, but precompute here keeps it correct even if not).
+        self.val_dataset = None
+        self.val_data_loader = None
+        if self.args.validation_meta_file is not None and self.args.model_type == "wan-i2v":
+            logger.info(f"Initializing validation dataset from {self.args.validation_meta_file}")
+            val_kwargs = self.args.model_dump()
+            val_kwargs["meta_data_file"] = self.args.validation_meta_file
+            self.val_dataset = WanI2VDatasetWithResize(
+                **val_kwargs,
+                device=self.accelerator.device,
+                max_num_frames=self.state.train_frames,
+                height=self.state.train_height,
+                width=self.state.train_width,
+                trainer=self,
+            )
+            val_tmp_loader = torch.utils.data.DataLoader(
+                self.val_dataset, collate_fn=self.collate_fn, batch_size=1, num_workers=0,
+                pin_memory=self.args.pin_memory,
+            )
+            val_tmp_loader = self.accelerator.prepare_data_loader(val_tmp_loader)
+            for _ in val_tmp_loader:
+                ...
+            self.accelerator.wait_for_everyone()
+            logger.info(f"Validation dataset ready ({len(self.val_dataset)} clips)")
+
         unload_model(self.components.vae)
         unload_model(self.components.text_encoder)
         free_memory()
@@ -209,6 +236,16 @@ class Trainer:
             pin_memory=self.args.pin_memory,
             shuffle=True,
         )
+
+        if self.val_dataset is not None:
+            self.val_data_loader = torch.utils.data.DataLoader(
+                self.val_dataset,
+                collate_fn=self.collate_fn,
+                batch_size=self.args.batch_size,
+                num_workers=self.args.num_workers,
+                pin_memory=self.args.pin_memory,
+                shuffle=False,
+            )
 
     def prepare_trainable_parameters(self):
         logger.info("Initializing trainable parameters")
@@ -439,6 +476,9 @@ class Trainer:
                     global_step += 1
                     self.__maybe_save_checkpoint(global_step)
 
+                    if getattr(self, "val_data_loader", None) is not None and global_step % self.args.val_loss_steps == 0:
+                        self.validate(global_step)
+
                 logs["loss"] = loss.detach().item()
                 logs["lr"] = self.lr_scheduler.get_last_lr()[0]
                 progress_bar.set_postfix(logs)
@@ -461,6 +501,31 @@ class Trainer:
         logger.info(f"Memory after training end: {json.dumps(memory_statistics, indent=4)}")
 
         accelerator.end_training()
+
+    @torch.no_grad()
+    def validate(self, global_step: int):
+        """Forward-only validation loss over held-out clips (cached latents). Deterministic:
+        re-seeds RNG so each clip's timestep+noise are identical across validations -> val_loss is
+        directly comparable across steps/checkpoints. RNG is restored so the train stream is unaffected.
+        Cheap (one transformer forward per clip, no backward/optimizer), runs under no_grad + eval."""
+        if getattr(self, "val_data_loader", None) is None:
+            return None
+        self.components.transformer.eval()
+        cpu_rng = torch.get_rng_state()
+        cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        torch.manual_seed(self.args.seed if self.args.seed is not None else 42)
+        losses = []
+        for batch in self.val_data_loader:
+            loss = self.compute_loss(batch)
+            losses.append(loss.mean().item())
+        torch.set_rng_state(cpu_rng)
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state_all(cuda_rng)
+        self.components.transformer.train()
+        val_loss = sum(losses) / max(1, len(losses))
+        self.accelerator.log({"val_loss": val_loss}, step=global_step)
+        logger.info(f"[val] step {global_step}: val_loss={val_loss:.4f} (n={len(losses)} clips)")
+        return val_loss
 
     def fit(self):
         self.check_setting()

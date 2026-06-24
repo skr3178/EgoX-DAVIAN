@@ -26,6 +26,11 @@ class Args(BaseModel):
     meta_data_file: Path | None = None
     cos_sim_scaling_factor: float = 1.0
 
+    # Forward-only validation loss on held-out clips (cached latents). If set, every
+    # `val_loss_steps` optimizer steps the trainer logs `val_loss` over these clips.
+    validation_meta_file: Path | None = None
+    val_loss_steps: int = 100
+
     ########## Training #########
     resume_from_checkpoint: Path | None = None
 
@@ -161,6 +166,8 @@ class Args(BaseModel):
         parser.add_argument("--ego_prior_video_column", type=str, default=None)
         parser.add_argument("--meta_data_file", type=str, default=None)
         parser.add_argument("--cos_sim_scaling_factor", type=float, default=1.0)
+        parser.add_argument("--validation_meta_file", type=str, default=None)
+        parser.add_argument("--val_loss_steps", type=int, default=100)
 
         # Model configuration
         parser.add_argument("--mixed_precision", type=str, default="no")
